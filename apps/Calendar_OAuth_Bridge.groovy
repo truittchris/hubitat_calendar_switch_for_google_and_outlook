@@ -2,7 +2,7 @@
  * truittchris Calendar OAuth Bridge
  * Parent app (OAuth + polling + child switch orchestration)
  *
- * v0.1.0
+ * v0.1.2
  *
  * What it does
  * - OAuth 2.0 connect to:
@@ -10,19 +10,23 @@
  *   - Microsoft 365 / Outlook via Microsoft Graph (read-only)
  * - Polls primary calendar, evaluates events against per-switch rules
  * - Drives child switch devices ON during matching events (with before/after offsets)
+ * - Publishes upcoming matching events (next 3) to each child device (Option A)
  *
  * Important Hubitat note
  * - You must enable OAuth for this app in Apps Code (the OAuth toggle) before authentication will work.
  * - The redirect URI to register at Google/Microsoft is always:
  *   https://cloud.hubitat.com/oauth/stateredirect
+ *
+ * v0.1.2 changes
+ * - Fix "Create switch" UX: after a successful create/save/delete, the app returns to the Child switches list
+ *   so required fields do not clear and block navigation.
  */
 
 import groovy.json.JsonSlurper
-import groovy.json.JsonOutput
 import java.net.URLEncoder
 import java.net.URLDecoder
 
-def appVersion() { "0.1.0" }
+def appVersion() { "0.1.3" }
 
 definition(
     name: "Calendar OAuth Bridge",
@@ -86,6 +90,7 @@ def initialize() {
     // Ensure base structures
     state.switches = (state.switches instanceof Map) ? state.switches : [:]
     state.nextIndex = (state.nextIndex instanceof Number) ? (state.nextIndex as Integer) : 1
+    state.goToDevicesPage = (state.goToDevicesPage == true)
 
     // Ensure OAuth token for callback access
     oauthEnabled()
@@ -133,7 +138,7 @@ def mainPage() {
             input name: "pollSeconds", type: "number", title: "Poll interval (seconds)", required: true, defaultValue: 60
             input name: "windowHours", type: "number", title: "Lookahead window (hours)", required: true, defaultValue: 24
             input name: "lookbackHours", type: "number", title: "Lookback window (hours)", required: true, defaultValue: 6
-            input name: "runNow", type: "button", title: "Poll now", submitOnChange: true
+            input "runNow", "button", title: "Poll now", submitOnChange: true
             if (state.lastPoll) {
                 paragraph("Last poll: ${new Date(state.lastPoll as Long)}")
             }
@@ -182,7 +187,7 @@ def authenticationPage() {
             }
 
             if (settings.provider == "google") {
-                paragraph("Enter your Google OAuth Client ID and Client Secret. Google OAuth client must be type: Web application.")
+                paragraph("Enter your Google OAuth Client ID and Client Secret. OAuth client must be type: Web application.")
                 input "gaClientID", "text", title: "Google Client ID", required: true, submitOnChange: true
                 input "gaClientSecret", "text", title: "Google Client Secret", required: true, submitOnChange: true
             } else if (settings.provider == "microsoft") {
@@ -202,7 +207,7 @@ def authenticationPage() {
             } else {
                 paragraph("Authentication is complete.")
             }
-            href "authenticationResetPage", title: "Reset authorization", description: "Revoke tokens (best-effort) and clear stored credentials"
+            href "authenticationResetPage", title: "Reset authorization", description: "Revoke tokens (best-effort) and clear stored tokens"
         }
     }
 }
@@ -214,7 +219,6 @@ def authenticationResetPage() {
     atomicState.tokenExpires = null
     atomicState.scopesAuthorized = null
     atomicState.provider = null
-    state.oauthInitState = null
     state.lastError = null
 
     dynamicPage(name: "authenticationResetPage", title: "Authorization reset", install: false, uninstall: false, nextPage: "authenticationPage") {
@@ -226,6 +230,18 @@ def authenticationResetPage() {
 
 def devicesPage() {
     dynamicPage(name: "devicesPage", title: "Child switches", install: false, uninstall: false, nextPage: "mainPage") {
+        if (state.deviceSaveMsg) {
+            section("Status") {
+                paragraph(state.deviceSaveMsg)
+            }
+            state.deviceSaveMsg = null
+        }
+        if (state.lastError) {
+            section("Last error") {
+                paragraph(state.lastError)
+            }
+        }
+
         section("Add") {
             href(name: "add", page: "editDevicePage", title: "Add a new switch", description: "Create a new child device and set rules", params: [dni: "NEW"])
         }
@@ -250,6 +266,12 @@ def devicesPage() {
 }
 
 def editDevicePage(params) {
+    // UX fix: after a successful create/save/delete button click, return to list page immediately.
+    if (state.goToDevicesPage == true) {
+        state.goToDevicesPage = false
+        return devicesPage()
+    }
+
     def dni = params?.dni ?: "NEW"
     def isNew = (dni == "NEW")
     def cfg = (!isNew && state.switches?.get(dni) instanceof Map) ? (state.switches[dni] as Map) : [:]
@@ -258,6 +280,17 @@ def editDevicePage(params) {
     state.editingDni = dni
 
     dynamicPage(name: "editDevicePage", title: isNew ? "Add switch" : "Edit switch", install: false, uninstall: false, nextPage: "devicesPage") {
+        if (state.lastError) {
+            section("Last error") {
+                paragraph(state.lastError)
+            }
+        }
+        if (state.deviceSaveMsg) {
+            section("Status") {
+                paragraph(state.deviceSaveMsg)
+            }
+        }
+
         section("Device") {
             input name: "tmpLabel", type: "text", title: "Switch name", required: true, defaultValue: (isNew ? "" : (cfg.label ?: ""))
             input name: "tmpBeforeMin", type: "number", title: "Minutes before start to turn on", required: true, defaultValue: (cfg.beforeMin != null ? cfg.beforeMin : 0)
@@ -273,9 +306,9 @@ def editDevicePage(params) {
         }
 
         section("Actions") {
-            input name: "btnSaveSwitch", type: "button", title: isNew ? "Create switch" : "Save changes", submitOnChange: true
+            input "btnSaveSwitch", "button", title: isNew ? "Create switch" : "Save changes", submitOnChange: true
             if (!isNew) {
-                input name: "btnDeleteSwitch", type: "button", title: "Delete switch", submitOnChange: true
+                input "btnDeleteSwitch", "button", title: "Delete switch", submitOnChange: true
             }
         }
     }
@@ -318,6 +351,8 @@ private void saveSwitchFromTemp() {
     def label = (settings.tmpLabel ?: "").toString().trim()
     if (!label) {
         state.lastError = "Switch name is required."
+        state.deviceSaveMsg = null
+        logWarn(state.lastError)
         return
     }
 
@@ -333,21 +368,38 @@ private void saveSwitchFromTemp() {
     def includeAllDay = (settings.tmpIncludeAllDay == true)
     def includePrivate = (settings.tmpIncludePrivate != null) ? (settings.tmpIncludePrivate == true) : true
 
+    // Copy-on-write update to avoid nested-state persistence edge cases
+    Map switches = (state.switches instanceof Map) ? new LinkedHashMap(state.switches as Map) : new LinkedHashMap()
+
     String dni
     if (isNew) {
         dni = nextDni()
-        createChildSwitch(dni, label)
+        try {
+            createChildSwitch(dni, label)
+        } catch (e) {
+            state.lastError = "Unable to create child device. Verify the 'Calendar Control Switch' driver is installed. Details: ${e}"
+            state.deviceSaveMsg = null
+            logWarn(state.lastError)
+            return
+        }
     } else {
         dni = editing
         def child = getChildDevice(dni)
         if (!child) {
-            createChildSwitch(dni, label)
+            try {
+                createChildSwitch(dni, label)
+            } catch (e) {
+                state.lastError = "Unable to re-create missing child device. Details: ${e}"
+                state.deviceSaveMsg = null
+                logWarn(state.lastError)
+                return
+            }
         } else {
             child.setLabel(label)
         }
     }
 
-    state.switches[dni] = [
+    switches[dni] = [
         dni: dni,
         label: label,
         beforeMin: beforeMin,
@@ -359,26 +411,40 @@ private void saveSwitchFromTemp() {
         includePrivate: includePrivate
     ]
 
-    clearTempDeviceInputs()
+    state.switches = switches
     state.lastError = null
+    state.deviceSaveMsg = (isNew ? "Switch created: ${label}" : "Switch saved: ${label}")
     logInfo("Saved switch: ${label} (${dni})")
+
+    // UX: return to list page after save
+    state.goToDevicesPage = true
 }
+
 
 private void deleteSwitch(String dni) {
     if (!dni || dni == "NEW") return
-    def cfg = state.switches?.get(dni)
+    def cfg = (state.switches instanceof Map) ? (state.switches as Map).get(dni) : null
+
     try {
         deleteChildDevice(dni)
     } catch (e) {
         logWarn("Delete child failed (${dni}): ${e}")
     }
+
     try {
-        state.switches?.remove(dni)
+        Map switches = (state.switches instanceof Map) ? new LinkedHashMap(state.switches as Map) : new LinkedHashMap()
+        switches.remove(dni)
+        state.switches = switches
     } catch (ignored) { }
+
     clearTempDeviceInputs()
     state.lastError = null
+    state.deviceSaveMsg = "Switch deleted: ${cfg?.label ?: dni}"
+    state.goToDevicesPage = true
+
     logInfo("Deleted switch: ${cfg?.label ?: dni}")
 }
+
 
 private String nextDni() {
     Integer idx = (state.nextIndex instanceof Number) ? (state.nextIndex as Integer) : 1
@@ -388,12 +454,11 @@ private String nextDni() {
 }
 
 private void createChildSwitch(String dni, String label) {
-    // Custom driver included in this package: truittchris "Calendar Control Switch"
     addChildDevice("truittchris", "Calendar Control Switch", dni, [label: label, isComponent: false])
 }
 
 private void clearTempDeviceInputs() {
-    ["tmpLabel","tmpBeforeMin","tmpInclude","tmpExclude","tmpRequireBusy","tmpIncludeAllDay","tmpIncludePrivate","tmpAfterMin"].each { k ->
+    ["tmpLabel","tmpBeforeMin","tmpAfterMin","tmpInclude","tmpExclude","tmpRequireBusy","tmpIncludeAllDay","tmpIncludePrivate"].each { k ->
         try { app.removeSetting(k) } catch (ignored) { }
     }
 }
@@ -407,8 +472,7 @@ def schedulePolling() {
     if (seconds < 30) seconds = 30
     if (seconds > 3600) seconds = 3600
 
-    // Poll once after settings change, then continue loop with runIn
-    runIn(seconds, "poll")
+    runIn(seconds, "poll", [overwrite: true])
 }
 
 def poll() {
@@ -452,8 +516,9 @@ private void evaluateAndDrive(List<Map> events, String onlyDni = null) {
     if (!(state.switches instanceof Map) || state.switches.size() == 0) return
     def nowMs = now()
 
-    // Sort once for deterministic active selection
-    def sorted = (events ?: []).findAll { it?.startMs != null && it?.endMs != null }.sort { a, b -> (a.startMs as Long) <=> (b.startMs as Long) }
+    def sorted = (events ?: [])
+        .findAll { it?.startMs != null && it?.endMs != null }
+        .sort { a, b -> (a.startMs as Long) <=> (b.startMs as Long) }
 
     state.switches.keySet().each { dni ->
         if (onlyDni && dni != onlyDni) return
@@ -476,6 +541,8 @@ private void evaluateAndDrive(List<Map> events, String onlyDni = null) {
         Integer activeCount = 0
         Map firstActive = null
 
+        List<Map> upcoming = []
+
         sorted.each { ev ->
             if (!includeAllDay && ev.isAllDay == true) return
             if (requireBusy && ev.busyFlag == false) return
@@ -489,22 +556,45 @@ private void evaluateAndDrive(List<Map> events, String onlyDni = null) {
                 active = true
                 activeCount = activeCount + 1
                 if (!firstActive) firstActive = ev
+                return
+            }
+
+            if (nowMs < onAt && upcoming.size() < 3) {
+                upcoming << [
+                    provider: ev.provider ?: settings.provider,
+                    title: ev.title ?: "",
+                    onAtMs: onAt,
+                    offAtMs: offAt,
+                    startMs: ev.startMs,
+                    endMs: ev.endMs
+                ]
             }
         }
 
-        Map meta = [
+                def nextEv = (upcoming && upcoming.size() > 0) ? upcoming[0] : null
+        def upcomingSummary = upcoming.collect { ev -> "${formatInstant(ev.onAtMs as Long)} – ${(ev.title ?: "Busy")}" }.join(" | ")
+
+Map meta = [
             activeCount: activeCount,
             provider: firstActive?.provider ?: settings.provider,
             title: firstActive?.title ?: "",
             startMs: firstActive?.startMs,
             endMs: firstActive?.endMs,
-            lastPoll: state.lastPoll
+            nextEvents: upcoming,
+            upcomingSummary: upcomingSummary,
+            nextTitle: nextEv?.title,
+            nextStartMs: nextEv?.startMs,
+            nextEndMs: nextEv?.endMs,
+            nextOnAtMs: nextEv?.onAtMs,
+            nextOffAtMs: nextEv?.offAtMs,
+            lastPoll: state.lastPoll,
+            lastError: state.lastError
         ]
 
         child.setCalendarState(active, meta)
 
         if (isDebugEnabled) {
-            logDebug("Device ${child.displayName} -> ${active ? "ON" : "OFF"} (matches: ${activeCount})")
+            logDebug("Device ${child.displayName} -> ${active ? "ON" : "OFF"} (matches: ${activeCount}, upcoming: ${upcoming.size()})")
         }
     }
 }
@@ -566,9 +656,7 @@ private List<Map> fetchGoogleEvents(Long startMs, Long endMs, TimeZone tz) {
 
     def items = resp?.items ?: []
     List<Map> out = []
-    items.each { ev ->
-        out << normalizeGoogleEvent(ev, tz)
-    }
+    items.each { ev -> out << normalizeGoogleEvent(ev, tz) }
     return out
 }
 
@@ -576,8 +664,8 @@ private Map normalizeGoogleEvent(def ev, TimeZone tz) {
     def startRaw = ev?.start?.dateTime ?: ev?.start?.date
     def endRaw = ev?.end?.dateTime ?: ev?.end?.date
 
-    Long startMs = parseGoogleToMillis(startRaw, tz, true)
-    Long endMs = parseGoogleToMillis(endRaw, tz, false)
+    Long startMs = parseGoogleToMillis(startRaw, tz)
+    Long endMs = parseGoogleToMillis(endRaw, tz)
 
     boolean isAllDay = (ev?.start?.date && !ev?.start?.dateTime)
 
@@ -599,7 +687,7 @@ private Map normalizeGoogleEvent(def ev, TimeZone tz) {
     ]
 }
 
-private Long parseGoogleToMillis(String s, TimeZone tz, boolean isStart) {
+private Long parseGoogleToMillis(String s, TimeZone tz) {
     if (!s) return null
 
     // All-day date only (yyyy-MM-dd)
@@ -655,9 +743,7 @@ private List<Map> fetchMicrosoftEvents(Long startMs, Long endMs, TimeZone tz) {
 
     def items = resp?.value ?: []
     List<Map> out = []
-    items.each { ev ->
-        out << normalizeMicrosoftEvent(ev, tz)
-    }
+    items.each { ev -> out << normalizeMicrosoftEvent(ev, tz) }
     return out
 }
 
@@ -697,7 +783,6 @@ private Long parseGraphLocalToMillis(String s, TimeZone tz) {
             return sdf.parse(s).time
         } catch (ignored) { }
     }
-    // Fallback: first 19 chars
     try {
         def t = (s.size() >= 19) ? s.substring(0, 19) : s
         def sdf = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss")
@@ -712,12 +797,12 @@ private Long parseGraphLocalToMillis(String s, TimeZone tz) {
  * OAuth plumbing
  * --------------------------*/
 
-private getRedirectURL()  { "https://cloud.hubitat.com/oauth/stateredirect" }
+private getRedirectURL() { "https://cloud.hubitat.com/oauth/stateredirect" }
 
-// Stable state value for Hubitat's stateredirect flow
+// Keep the state value simple. Do not add extra '&' parameters.
 private String oauthInitState() {
-    if (!state.accessToken) oauthEnabled()
-    return "${getHubUID()}/apps/${app.id}/callback?access_token=${state.accessToken}"
+    oauthEnabled()
+    return "${getApiServerUrl()}/apps/${app.id}/callback?access_token=${state.accessToken}"
 }
 
 def oauthEnabled() {
@@ -728,9 +813,7 @@ def oauthEnabled() {
         try {
             def accessToken = createAccessToken()
             state.accessToken = accessToken
-            state.oauthInitState = oauthInitState()
             ok = true
-            logDebug("Access token created, oauthInitState: ${state.oauthInitState}", "auth")
         } catch (e) {
             if (e.toString().indexOf("OAuth is not enabled for this App") > -1) {
                 log.error "OAuth must be enabled for this app in Apps Code."
@@ -740,22 +823,23 @@ def oauthEnabled() {
             ok = false
         }
     }
+
+    if (ok && !state.oauthInitState) {
+        state.oauthInitState = oauthInitState()
+    }
     return ok
 }
 
 private boolean credentialsPresent() {
     if (!settings.provider) return false
-    if (settings.provider == "google") {
-        return (settings.gaClientID && settings.gaClientSecret)
-    } else if (settings.provider == "microsoft") {
-        return (settings.msClientId && settings.msClientSecret)
-    }
+    if (settings.provider == "google") return (settings.gaClientID && settings.gaClientSecret)
+    if (settings.provider == "microsoft") return (settings.msClientId && settings.msClientSecret)
     return false
 }
 
 def getOAuthInitUrl() {
-    if (!state.accessToken) oauthEnabled()
-    state.oauthInitState = oauthInitState()
+    oauthEnabled()
+    if (!state.oauthInitState) state.oauthInitState = oauthInitState()
 
     if (settings.provider == "google") {
         def oauthParams = [
@@ -791,19 +875,12 @@ def callback() {
     def code = params.code
     def oauthState = params.state
 
-    def expectedState = state.oauthInitState
-    def decodedReceived = safeUrlDecode(oauthState ?: "")
-    def decodedExpected = safeUrlDecode(expectedState ?: "")
-
-    boolean stateOk =
-        (oauthState == expectedState) ||
-        (decodedReceived == expectedState) ||
-        (decodedReceived == decodedExpected)
-
-    if (!stateOk) {
-        log.error "callback() state mismatch. Received: ${oauthState}, decoded: ${decodedReceived}, expected: ${expectedState}"
-        return connectionStatus("<p>Authorization failed. State validation failed.</p><p>Close this page and try again.</p>")
+    def decodedState = oauthState ? safeUrlDecode(oauthState) : null
+    if (oauthState && state.oauthInitState && (oauthState != state.oauthInitState) && (decodedState != state.oauthInitState)) {
+        // Hubitat Cloud stateredirect does not always pass the original state back to the app callback.
+        logWarn("callback() state mismatch (non-fatal). received=${oauthState} decoded=${decodedState} expected=${state.oauthInitState}")
     }
+
     if (!code) {
         log.error "callback() missing code. Params: ${params}"
         return connectionStatus("<p>Authorization failed. Missing authorization code.</p>")
@@ -818,6 +895,7 @@ def callback() {
         atomicState.scopesAuthorized = tokenData.scope ?: ""
         state.lastError = null
 
+        state.oauthInitState = null
         logInfo("OAuth completed for ${settings.provider}")
         connectionStatus("<p>Authorization successful.</p><p>Close this page and return to Hubitat.</p>")
     } catch (e) {
@@ -858,12 +936,7 @@ private Map exchangeCodeForToken(String code) {
 }
 
 private Map refreshAuthToken() {
-    def logMsg = ["refreshAuthToken - provider: ${settings.provider}"]
-    if (!atomicState.refreshToken) {
-        logMsg.push("No refresh token available")
-        logDebug(logMsg, "auth")
-        return [ok: false]
-    }
+    if (!atomicState.refreshToken) return [ok: false]
 
     if (settings.provider == "google") {
         def tokenUrl = "https://oauth2.googleapis.com/token"
@@ -895,7 +968,6 @@ private Map refreshAuthToken() {
         def data = tokenPost("refreshAuthToken", tokenUrl, tokenParams)
         if (data?.access_token) {
             atomicState.authToken = data.access_token
-            // Microsoft may rotate refresh tokens
             if (data.refresh_token) atomicState.refreshToken = data.refresh_token
             atomicState.tokenExpires = now() + ((safeInt(data.expires_in, 3600) - 60) * 1000L)
             return [ok: true]
@@ -907,60 +979,32 @@ private Map refreshAuthToken() {
 }
 
 private boolean authTokenValid(fromFunction) {
-    def answer = false
-    def logMsg = ["authTokenValid - fromFunction: ${fromFunction}"]
-
-    if (!atomicState.authToken || !atomicState.tokenExpires) {
-        logMsg.push("Missing token")
-        logDebug(logMsg, "auth")
-        return false
-    }
-
-    if ((atomicState.tokenExpires as Long) >= now()) {
-        answer = true
-        logMsg.push("token good until ${new Date(atomicState.tokenExpires as Long)}")
-    } else {
-        def refreshed = refreshAuthToken()
-        answer = (refreshed?.ok == true)
-        logMsg.push("token expired, refresh ok: ${answer}")
-    }
-
-    logDebug(logMsg, "auth")
-    return answer
+    if (!atomicState.authToken || !atomicState.tokenExpires) return false
+    if ((atomicState.tokenExpires as Long) >= now()) return true
+    return (refreshAuthToken()?.ok == true)
 }
 
 private Map tokenPost(String fromFunction, String url, Map bodyParams) {
-    def logMsg = ["tokenPost - ${fromFunction} url: ${url}"]
     Map out = [:]
 
-    try {
-        httpPost([
-            uri: url,
-            contentType: "application/x-www-form-urlencoded",
-            body: bodyParams
-        ]) { resp ->
-            if (resp?.status != 200) throw new RuntimeException("Token endpoint HTTP ${resp?.status}")
-
-            def data = resp.data
-            if (data instanceof Map) {
-                out = data
-            } else if (data != null) {
-                // Best-effort parse
-                def slurper = new JsonSlurper()
-                out = slurper.parseText(data.toString()) as Map
-            }
-        }
-    } catch (e) {
-        log.error "tokenPost - ${fromFunction} error: ${e}"
-        throw e
+    httpPost([
+        uri: url,
+        body: bodyParams,
+        requestContentType: "application/x-www-form-urlencoded",
+        contentType: "application/json"
+    ]) { resp ->
+        if (resp?.status != 200) throw new RuntimeException("Token endpoint HTTP ${resp?.status}")
+        def data = resp.data
+        if (data instanceof Map) out = data
+        else if (data != null) out = (new JsonSlurper().parseText(data.toString()) as Map)
     }
 
-    if (debugAuth) logDebug(logMsg + ["token keys: ${out?.keySet()}"], "auth")
+    if (debugAuth) logDebug("tokenPost ${fromFunction} keys=${out?.keySet()}", "auth")
     return out
 }
 
 def revokeAccess() {
-    // Best-effort revoke for Google only. Microsoft does not provide a simple universal revoke endpoint.
+    // Best-effort revoke for Google only.
     if (settings.provider == "google" && atomicState.authToken) {
         try {
             def uri = "https://accounts.google.com/o/oauth2/revoke?token=${atomicState.authToken}"
@@ -976,10 +1020,7 @@ def revokeAccess() {
  * --------------------------*/
 
 def apiGet(fromFunction, uri, path, queryParams, Map headersExtra = [:]) {
-    def apiResponse
-    def isAuthorized = authTokenValid(fromFunction)
-
-    if (!isAuthorized) return null
+    if (!authTokenValid(fromFunction)) return null
 
     def headers = [
         "Authorization": "Bearer ${atomicState.authToken}",
@@ -994,24 +1035,20 @@ def apiGet(fromFunction, uri, path, queryParams, Map headersExtra = [:]) {
         query: queryParams
     ]
 
-    if (debugAuth) logDebug(["apiGet", fromFunction, "apiParams: ${apiParams}"], "auth")
-
     try {
-        httpGet(apiParams) { resp ->
-            apiResponse = resp.data
-        }
+        def apiResponse
+        httpGet(apiParams) { resp -> apiResponse = resp.data }
+        return apiResponse
     } catch (e) {
         // If 401, refresh and retry once
-        if (e.toString().indexOf("HttpResponseException") > -1 && e?.response?.status == 401) {
-            if (refreshAuthToken()?.ok == true) {
+        try {
+            if (e?.response?.status == 401 && refreshAuthToken()?.ok == true) {
                 return apiGet(fromFunction, uri, path, queryParams, headersExtra)
             }
-        }
+        } catch (ignored) { }
         log.error "apiGet - ${fromFunction} ${path} error: ${e}"
         return null
     }
-
-    return apiResponse
 }
 
 /* ---------------------------
@@ -1019,7 +1056,6 @@ def apiGet(fromFunction, uri, path, queryParams, Map headersExtra = [:]) {
  * --------------------------*/
 
 private String toIsoRfc3339(Long ms) {
-    // Example: 2015-06-20T11:39:45Z
     def d = new Date(ms)
     return d.format("yyyy-MM-dd'T'HH:mm:ss'Z'", TimeZone.getTimeZone("UTC"))
 }
@@ -1031,10 +1067,7 @@ private String toIsoLocal(Long ms, TimeZone tz) {
 
 private List<String> csvToList(def s) {
     if (!s) return []
-    return s.toString()
-        .split(",")
-        .collect { it.toString().trim() }
-        .findAll { it }
+    return s.toString().split(",").collect { it.toString().trim() }.findAll { it }
 }
 
 private Integer safeInt(def v, Integer fallback) {
@@ -1047,16 +1080,10 @@ private Integer safeInt(def v, Integer fallback) {
     }
 }
 
-private String urlEnc(String s) {
-    return URLEncoder.encode(s ?: "", "UTF-8")
-}
+private String urlEnc(String s) { URLEncoder.encode(s ?: "", "UTF-8") }
 
 private String safeUrlDecode(String s) {
-    try {
-        return URLDecoder.decode(s, "UTF-8")
-    } catch (ignored) {
-        return s
-    }
+    try { URLDecoder.decode(s, "UTF-8") } catch (ignored) { s }
 }
 
 def toQueryString(Map m) {
@@ -1064,17 +1091,11 @@ def toQueryString(Map m) {
 }
 
 def oAuthInstructions() {
-    def text = ""
-    text += "Steps to enable OAuth:\n"
-    text += "1) Go to Apps Code in Hubitat.\n"
-    text += "2) Open this app's code entry.\n"
-    text += "3) Enable the OAuth toggle.\n"
-    text += "4) Click Save.\n"
-    return text
+    "Steps to enable OAuth:\n1) Go to Apps Code in Hubitat.\n2) Open this app's code entry.\n3) Enable the OAuth toggle.\n4) Click Save.\n"
 }
 
 def authenticationInstructions() {
-    return "Tap Authenticate to open the provider login page. Complete sign-in and consent. When successful, you can close the browser tab and return to Hubitat."
+    "Tap Authenticate to open the provider login page. Complete sign-in and consent. When successful, close the tab and return to Hubitat."
 }
 
 def connectionStatus(message) {
@@ -1102,14 +1123,7 @@ def connectionStatus(message) {
 private void logDebug(msg, type=null) {
     if (isDebugEnabled != true) return
     if (type == "auth" && debugAuth != true) return
-    if (msg instanceof List) msg = msg.join(" | ")
     log.debug "${msg}"
 }
-
-private void logInfo(msg) {
-    log.info "${msg}"
-}
-
-private void logWarn(msg) {
-    log.warn "${msg}"
-}
+private void logInfo(msg) { log.info "${msg}" }
+private void logWarn(msg) { log.warn "${msg}" }
