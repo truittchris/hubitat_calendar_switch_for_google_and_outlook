@@ -62,8 +62,3 @@ Troubleshooting
 - If you see provider “redirect_uri_mismatch”, verify the redirect URI is exactly:
   https://cloud.hubitat.com/oauth/stateredirect
 - Turn on Debug authentication to log API calls and token lifecycle.
-
-Roadmap ideas (if you want them next)
-- Per-switch field matching (subject vs location vs organizer)
-- Per-switch calendar selection (not just primary)
-- Push updates (Microsoft Graph subscriptions or Google push channels) with a lightweight relay service
