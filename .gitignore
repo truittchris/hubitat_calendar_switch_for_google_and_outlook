@@ -1,0 +1,25 @@
+# OS / Editor
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# IDE
+.idea/
+.vscode/
+
+# Dependencies (if used)
+node_modules/
+vendor/
+
+# Local config and secrets
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.jks
+*.keystore
+config.local.*
+secrets.*

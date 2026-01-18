@@ -1,0 +1,30 @@
+{
+  "packageName": "Hubitat Calendar Switch",
+  "packageDescription": "Connects Hubitat to Google Calendar and Microsoft Outlook (Microsoft 365) and creates child switches that follow calendar events.",
+  "author": "Chris Truitt",
+  "minimumHEVersion": "2.3.0",
+  "documentationLink": "https://github.com/truittchris/hubitat_calendar_switch",
+  "communityLink": "",
+  "version": "1.0.5",
+  "dateReleased": "2026-01-18",
+  "licenseFile": "LICENSE",
+  "apps": [
+    {
+      "id": "hubitat_calendar_switch",
+      "name": "Hubitat Calendar Switch",
+      "namespace": "truittchris",
+      "location": "Apps/Hubitat_Calendar_Switch.groovy",
+      "required": true,
+      "oauth": true
+    }
+  ],
+  "drivers": [
+    {
+      "id": "hubitat_calendar_switch_control_device",
+      "name": "Hubitat Calendar Switch - Control Device",
+      "namespace": "truittchris",
+      "location": "Drivers/Hubitat_Calendar_Switch_Control_Device.groovy",
+      "required": true
+    }
+  ]
+}

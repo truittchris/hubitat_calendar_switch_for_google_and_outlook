@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Support portal
+    url: https://www.christruitt.com/support
+    about: For setup help, troubleshooting, and non-bug questions, start here.
+  - name: Security reports
+    url: https://www.christruitt.com/support
+    about: Report security issues privately through the support portal.
