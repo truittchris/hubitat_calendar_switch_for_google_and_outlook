@@ -115,6 +115,7 @@ def mainPage() {
             input "msClientId", "text", title: "Microsoft client ID", required: false
             input "msClientSecret", "password", title: "Microsoft client secret", required: false
             input "msTenant", "text", title: "Tenant", description: "Usually 'common'. Leave as-is unless you know you need something else.", defaultValue: "common", required: false
+            input "msMeetingPresence", "bool", title: "Include Microsoft Teams Presence Status?", required: false
             paragraph(renderProviderStatus("microsoft"))
             href url: microsoftAuthorizeUrl(), style: "external", required: false, title: "Authorize Microsoft", description: "Opens in a new tab"
             if (state?.msToken?.refresh_token) {
@@ -389,6 +390,8 @@ def pollAllChildren(Boolean force = false) {
     boolean gNeeded  = children.any { (it.getDataValue("provider") == "google") }
 
     Map msResult = null
+    Map msPresence = null
+
     Map gResult = null
 
     if (msNeeded) {
@@ -399,6 +402,8 @@ def pollAllChildren(Boolean force = false) {
         } else {
             msResult = state.msLastResult
         }
+
+        if (msMeetingPresence) msPresence = fetchMicrosoftPresenceCached(force, minSeconds)
     }
 
     if (gNeeded) {
@@ -433,6 +438,11 @@ def pollAllChildren(Boolean force = false) {
             if (result?.error) providerMeta.error = result.error
 
             cd.evaluateEvents(providerMeta, events)
+
+            // Presence fan-out (Microsoft only)
+            if (provider == "microsoft" && msPresence) {
+                cd.setMicrosoftPresence(msPresence)
+            }
         } catch (Exception e) {
             logWarn("Error delivering events to ${cd?.displayName}: ${e.message}")
             try {
@@ -763,7 +773,9 @@ private String microsoftAuthorizeUrl() {
     state.msOauthNonce = randomString(20)
 
     String redirectUri = "https://cloud.hubitat.com/oauth/stateredirect"
-    String scope = URLEncoder.encode("offline_access Calendars.Read", "UTF-8")
+    String scope_str = "offline_access Calendars.Read"
+    if (msMeetingPresence) scope_str += " Presence.Read"
+    String scope = URLEncoder.encode(scope_str, "UTF-8")
     String stateParam = URLEncoder.encode(oauthStateFor("microsoft"), "UTF-8")
 
     return "https://login.microsoftonline.com/${tenant}/oauth2/v2.0/authorize" +
@@ -821,6 +833,7 @@ private Map exchangeMicrosoftCodeForToken(String code) {
         code_verifier: verifier,
         scope: "offline_access Calendars.Read"
     ]
+    if (msMeetingPresence) body.scope += " Presence.Read"
 
     def req = [
         uri: "https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token",
@@ -877,6 +890,7 @@ private String microsoftAccessToken() {
         grant_type: "refresh_token",
         scope: "offline_access Calendars.Read"
     ]
+    if (msMeetingPresence) body.scope += " Presence.Read"
 
     def req = [
         uri: "https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token",
@@ -963,6 +977,46 @@ private Map fetchMicrosoftEvents(Boolean force = false) {
             result.events = events
         } else {
             result.error = "Microsoft fetch failed: HTTP ${resp?.status}"
+        }
+    }
+
+    return result
+}
+
+private Map fetchMicrosoftPresenceCached(Boolean force, long minSeconds) {
+    if (!force && state?.msLastPresence && !shouldFetchProvider("microsoftPresence", minSeconds)) {
+        return state.msLastPresence
+    }
+
+    Map presence = fetchMicrosoftPresence()
+    state.msLastPresence = presence
+    state.lastMsPresenceFetchMs = now()
+    return presence
+}
+
+private Map fetchMicrosoftPresence() {
+    if (!state?.msToken?.refresh_token) {
+        return [error: "Microsoft not connected"]
+    }
+
+    String token = microsoftAccessToken()
+    if (!token) {
+        return [error: "Microsoft token unavailable"]
+    }
+
+    def req = [
+        uri: "https://graph.microsoft.com/v1.0/me/presence",
+        headers: [Authorization: "Bearer ${token}"]
+    ]
+
+    Map result = [:]
+
+    httpGet(req) { resp ->
+        if (resp?.status == 200) {
+            result.activity = resp.data.activity
+            result.availability = resp.data.availability
+        } else {
+            result.error = "Presence fetch failed: HTTP ${resp?.status}"
         }
     }
 
