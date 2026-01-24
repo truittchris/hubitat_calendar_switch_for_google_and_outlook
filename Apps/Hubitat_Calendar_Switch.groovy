@@ -20,7 +20,7 @@ import groovy.json.JsonSlurper
 import groovy.transform.Field
 import java.net.URLEncoder
 
-@Field static final String APP_VERSION = "1.0.4"
+@Field static final String APP_VERSION = "1.0.8"
 @Field static final String APP_NAME = "Hubitat Calendar Switch"
 
 // IMPORTANT: must exactly match the Driver "Name" in Hubitat Drivers Code
