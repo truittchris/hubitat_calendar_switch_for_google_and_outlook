@@ -1,11 +1,11 @@
 {
   "packageName": "Hubitat Calendar Switch (Google and Outlook)",
   "author": "Chris Truitt",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "minimumHEVersion": "2.3.0",
   "dateReleased": "2026-01-23",
   "licenseFile": "https://raw.githubusercontent.com/truittchris/hubitat_calendar_switch_for_google_and_outlook/main/LICENSE",
-  "releaseNotes": "1.0.6 - Fix HPM install failure (driver preferences). Improve Microsoft event time parsing so next-event fields populate reliably. Add debug logging to show filter and parsing stage counts.",
+  "releaseNotes": "1.0.7 - HPM install hotfix. Replaced corrupted driver source with clean Groovy so HPM can compile/install successfully. Keeps driver preferences input-only and retains Microsoft time parsing + debug logging improvements from 1.0.6.",
   "documentationLink": "https://github.com/truittchris/hubitat_calendar_switch_for_google_and_outlook#readme",
   "communityLink": "https://community.hubitat.com/",
   "tags": "Calendar",
