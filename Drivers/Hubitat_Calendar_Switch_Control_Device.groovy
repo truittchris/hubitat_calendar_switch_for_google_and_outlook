@@ -21,7 +21,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 @Field static final String DRIVER_NAME = "Hubitat Calendar Switch - Control Device"
-@Field static final String DRIVER_VERSION = "1.0.8"
+@Field static final String DRIVER_VERSION = "1.0.9"
 @Field static final String DT_FMT = "yyyy-MM-dd'T'HH:mm:ssXXX"
 
 metadata {
@@ -33,6 +33,7 @@ metadata {
         category: "Convenience"
     ) {
         capability "Switch"
+        capability "PresenceSensor"
         capability "Actuator"
         capability "Sensor"
         capability "Refresh"
@@ -61,6 +62,9 @@ metadata {
         attribute "lastTestResult", "string"
         attribute "driverVersion", "string"
         attribute "commandHelp", "string"
+
+        attribute "currentAvailability", "string"
+        attribute "currentActivity", "string"
     }
 }
 
@@ -252,6 +256,16 @@ void evaluateEvents(Map providerMeta, List events) {
     if (isDebugEnabled()) {
         _debug("active=${active?.title ?: 'none'} next=${next?.title ?: 'none'} switch=${target}")
     }
+}
+
+void setMicrosoftPresence(msPresence) {
+    String activity = msPresence?.activity ?: "Unknown"
+    _updateActivity(activity)
+
+    String availability = msPresence?.availability ?: "Unknown"
+    _updateAvailability(availability)
+
+    _updatePresence(activity)
 }
 
 // -----------------------------------------------------------------------------
@@ -514,6 +528,30 @@ private void _updateUpcomingSummary(List candidates, Date nowDate) {
 
     sendEvent(name: "upcomingSummary", value: summary)
 }
+
+private void _updateAvailability(String availability) {
+    sendEvent(name: "currentAvailability", value: availability)
+}
+
+private void _updateActivity(String activity) {
+    sendEvent(name: "currentActivity", value: activity)
+}
+
+private void _updatePresence(String activity) {
+    String normalizedActivity = (activity ?: "").toLowerCase()
+
+    boolean isPresent = normalizedActivity in [
+        "inameeting",
+        "inacall",
+        "presenting"
+    ]
+
+    sendEvent(
+        name: "presence",
+        value: isPresent ? "present" : "not present"
+    )
+}
+
 
 // -----------------------------------------------------------------------------
 // Test result helpers

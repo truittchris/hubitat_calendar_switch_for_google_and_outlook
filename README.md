@@ -191,6 +191,7 @@ Goal: register an app in Microsoft Entra ID and allow delegated read-only calend
 \- Add:
 
 &nbsp; - Calendars.Read
+&nbsp; - (Optional) Presence.Read (required for Microsoft Teams real-time availability)
 
 \- Grant admin consent if your tenant requires it
 
