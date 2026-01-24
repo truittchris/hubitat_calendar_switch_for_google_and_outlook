@@ -21,7 +21,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 @Field static final String DRIVER_NAME = "Hubitat Calendar Switch - Control Device"
-@Field static final String DRIVER_VERSION = "1.0.7"
+@Field static final String DRIVER_VERSION = "1.0.8"
 @Field static final String DT_FMT = "yyyy-MM-dd'T'HH:mm:ssXXX"
 
 metadata {
@@ -281,7 +281,8 @@ private boolean _passesEligibilityFilters(Map e) {
     boolean busy =
         (showAs in ["busy", "oof", "workingelsewhere"]) ||
         (transparency == "opaque") ||
-        _asBool(e?.busy)
+        _asBool(e?.busy) ||
+        _asBool(e?.isBusy)
 
     if (onlyBusy && !busy) return false
 
