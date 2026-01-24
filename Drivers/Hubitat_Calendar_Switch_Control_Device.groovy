@@ -21,7 +21,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 @Field static final String DRIVER_NAME = "Hubitat Calendar Switch - Control Device"
-@Field static final String DRIVER_VERSION = "1.0.7"
+@Field static final String DRIVER_VERSION = "1.0.8"
 @Field static final String DT_FMT = "yyyy-MM-dd'T'HH:mm:ssXXX"
 
 metadata {
