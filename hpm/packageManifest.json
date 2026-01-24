@@ -1,11 +1,11 @@
 {
   "packageName": "Hubitat Calendar Switch (Google and Outlook)",
   "author": "Chris Truitt",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "minimumHEVersion": "2.3.0",
-  "dateReleased": "2026-01-18",
+  "dateReleased": "2026-01-23",
   "licenseFile": "https://raw.githubusercontent.com/truittchris/hubitat_calendar_switch_for_google_and_outlook/main/LICENSE",
-  "releaseNotes": "1.0.5 – driver UX updates and stability fixes. See CHANGELOG for details.",
+  "releaseNotes": "1.0.6 - Fix HPM install failure (driver preferences). Improve Microsoft event time parsing so next-event fields populate reliably. Add debug logging to show filter and parsing stage counts.",
   "documentationLink": "https://github.com/truittchris/hubitat_calendar_switch_for_google_and_outlook#readme",
   "communityLink": "https://community.hubitat.com/",
   "tags": "Calendar",
@@ -17,7 +17,7 @@
       "location": "https://raw.githubusercontent.com/truittchris/hubitat_calendar_switch_for_google_and_outlook/main/Apps/Hubitat_Calendar_Switch.groovy",
       "required": true,
       "oauth": true,
-      "description": "Parent app – OAuth for Google and Microsoft, polls providers, and delivers a normalized event list to child control switches."
+      "description": "Parent app - OAuth for Google and Microsoft, polls providers, and delivers a normalized event list to child control switches."
     }
   ],
   "drivers": [
@@ -27,7 +27,7 @@
       "namespace": "truittchris",
       "location": "https://raw.githubusercontent.com/truittchris/hubitat_calendar_switch_for_google_and_outlook/main/Drivers/Hubitat_Calendar_Switch_Control_Device.groovy",
       "required": true,
-      "description": "Child switch driver – owns all match rules, timing, and filters; sets its own On/Off state based on calendar events delivered by the parent app."
+      "description": "Child switch driver - owns all match rules, timing, and filters; sets its own On/Off state based on calendar events delivered by the parent app."
     }
   ]
 }
