@@ -77,6 +77,7 @@ def updated() {
 private void initialize() {
     runEvery1Minute("pollAllChildren")
     runIn(5, "pollAllChildren")
+    runEvery1Day("keepOAuthTokensAlive")
 }
 
 // -----------------------------------------------------------------------------
@@ -875,7 +876,15 @@ private String microsoftAccessToken() {
     if (!tok) return null
 
     long expAt = safeLong(tok?.expires_at, 0L)
-    if (expAt && expAt > (now() + 60000L)) return tok.access_token
+    boolean forceRefresh = (
+        state?.msForceRefreshNext ||
+        !state?.msLastRefreshKeepAlive ||
+        (now() - state.msLastRefreshKeepAlive) > 24*60*60*1000L
+    )
+    
+    if (!forceRefresh && expAt && expAt > (now() + 60000L)) {
+        return tok.access_token
+    }
 
     String refreshToken = tok.refresh_token
     if (!refreshToken) return tok.access_token
@@ -902,9 +911,26 @@ private String microsoftAccessToken() {
     Map refreshed = [:]
     Integer status = null
 
-    httpPost(req) { resp ->
-        status = resp?.status as Integer
-        if (resp?.data instanceof Map) refreshed = (Map) resp.data
+  //  httpPost(req) { resp ->
+ //       status = resp?.status as Integer
+  //      if (resp?.data instanceof Map) refreshed = (Map) resp.data
+  //  }
+    
+    try {
+    	httpPost(req) { resp ->
+	        status = resp?.status as Integer
+   		    if (resp?.data instanceof Map) {
+            	refreshed = (Map) resp.data
+        	}
+    	}
+	} catch (groovyx.net.http.HttpResponseException e) {
+        def err = e.response?.data?.error
+        if (err == "invalid_grant") {
+            log.error "OAuth refresh token expired or revoked. User must re-authenticate."
+            state.oauthNeedsReauth = true
+        }
+        log.error "OAuth error: ${e.response?.data}"
+        throw e
     }
 
     if (status != null && status != 200) {
@@ -918,11 +944,34 @@ private String microsoftAccessToken() {
         tok.expires_in = expiresIn
         tok.expires_at = now() + (expiresIn * 1000L)
         state.msToken = tok
+        state.msLastRefreshKeepAlive = now()
+		state.msForceRefreshNext = false
         logDebug("Refreshed Microsoft token")
         return tok.access_token
     }
 
     return tok.access_token
+}
+
+void keepOAuthTokensAlive() {
+    try {
+        logDebug("Running OAuth keep-alive")
+
+        if (state?.msToken?.refresh_token) {
+
+            // force at least one real refresh cycle daily
+            state.msForceRefreshNext = true
+            microsoftAccessToken()
+
+        }
+
+        if (state?.gToken?.refresh_token) {
+            googleAccessToken()
+        }
+
+    } catch (Exception e) {
+        logWarn("Keep-alive failed: ${e.message}")
+    }
 }
 
 private Map fetchMicrosoftEvents(Boolean force = false) {
