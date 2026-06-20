@@ -77,6 +77,7 @@ def updated() {
 private void initialize() {
     runEvery1Minute("pollAllChildren")
     runIn(5, "pollAllChildren")
+    runEvery1Day("keepOAuthTokensAlive")
 }
 
 // -----------------------------------------------------------------------------
@@ -115,6 +116,7 @@ def mainPage() {
             input "msClientId", "text", title: "Microsoft client ID", required: false
             input "msClientSecret", "password", title: "Microsoft client secret", required: false
             input "msTenant", "text", title: "Tenant", description: "Usually 'common'. Leave as-is unless you know you need something else.", defaultValue: "common", required: false
+            input "msMeetingPresence", "bool", title: "Include Microsoft Teams Presence Status?", required: false
             paragraph(renderProviderStatus("microsoft"))
             href url: microsoftAuthorizeUrl(), style: "external", required: false, title: "Authorize Microsoft", description: "Opens in a new tab"
             if (state?.msToken?.refresh_token) {
@@ -389,6 +391,8 @@ def pollAllChildren(Boolean force = false) {
     boolean gNeeded  = children.any { (it.getDataValue("provider") == "google") }
 
     Map msResult = null
+    Map msPresence = null
+
     Map gResult = null
 
     if (msNeeded) {
@@ -399,6 +403,8 @@ def pollAllChildren(Boolean force = false) {
         } else {
             msResult = state.msLastResult
         }
+
+        if (msMeetingPresence) msPresence = fetchMicrosoftPresenceCached(force, minSeconds)
     }
 
     if (gNeeded) {
@@ -433,6 +439,11 @@ def pollAllChildren(Boolean force = false) {
             if (result?.error) providerMeta.error = result.error
 
             cd.evaluateEvents(providerMeta, events)
+
+            // Presence fan-out (Microsoft only)
+            if (provider == "microsoft" && msPresence) {
+                cd.setMicrosoftPresence(msPresence)
+            }
         } catch (Exception e) {
             logWarn("Error delivering events to ${cd?.displayName}: ${e.message}")
             try {
@@ -763,7 +774,9 @@ private String microsoftAuthorizeUrl() {
     state.msOauthNonce = randomString(20)
 
     String redirectUri = "https://cloud.hubitat.com/oauth/stateredirect"
-    String scope = URLEncoder.encode("offline_access Calendars.Read", "UTF-8")
+    String scope_str = "offline_access Calendars.Read"
+    if (msMeetingPresence) scope_str += " Presence.Read"
+    String scope = URLEncoder.encode(scope_str, "UTF-8")
     String stateParam = URLEncoder.encode(oauthStateFor("microsoft"), "UTF-8")
 
     return "https://login.microsoftonline.com/${tenant}/oauth2/v2.0/authorize" +
@@ -821,6 +834,7 @@ private Map exchangeMicrosoftCodeForToken(String code) {
         code_verifier: verifier,
         scope: "offline_access Calendars.Read"
     ]
+    if (msMeetingPresence) body.scope += " Presence.Read"
 
     def req = [
         uri: "https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token",
@@ -862,7 +876,15 @@ private String microsoftAccessToken() {
     if (!tok) return null
 
     long expAt = safeLong(tok?.expires_at, 0L)
-    if (expAt && expAt > (now() + 60000L)) return tok.access_token
+    boolean forceRefresh = (
+        state?.msForceRefreshNext ||
+        !state?.msLastRefreshKeepAlive ||
+        (now() - state.msLastRefreshKeepAlive) > 24*60*60*1000L
+    )
+    
+    if (!forceRefresh && expAt && expAt > (now() + 60000L)) {
+        return tok.access_token
+    }
 
     String refreshToken = tok.refresh_token
     if (!refreshToken) return tok.access_token
@@ -877,6 +899,7 @@ private String microsoftAccessToken() {
         grant_type: "refresh_token",
         scope: "offline_access Calendars.Read"
     ]
+    if (msMeetingPresence) body.scope += " Presence.Read"
 
     def req = [
         uri: "https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token",
@@ -888,9 +911,26 @@ private String microsoftAccessToken() {
     Map refreshed = [:]
     Integer status = null
 
-    httpPost(req) { resp ->
-        status = resp?.status as Integer
-        if (resp?.data instanceof Map) refreshed = (Map) resp.data
+  //  httpPost(req) { resp ->
+ //       status = resp?.status as Integer
+  //      if (resp?.data instanceof Map) refreshed = (Map) resp.data
+  //  }
+    
+    try {
+    	httpPost(req) { resp ->
+	        status = resp?.status as Integer
+   		    if (resp?.data instanceof Map) {
+            	refreshed = (Map) resp.data
+        	}
+    	}
+	} catch (groovyx.net.http.HttpResponseException e) {
+        def err = e.response?.data?.error
+        if (err == "invalid_grant") {
+            log.error "OAuth refresh token expired or revoked. User must re-authenticate."
+            state.oauthNeedsReauth = true
+        }
+        log.error "OAuth error: ${e.response?.data}"
+        throw e
     }
 
     if (status != null && status != 200) {
@@ -904,11 +944,34 @@ private String microsoftAccessToken() {
         tok.expires_in = expiresIn
         tok.expires_at = now() + (expiresIn * 1000L)
         state.msToken = tok
+        state.msLastRefreshKeepAlive = now()
+		state.msForceRefreshNext = false
         logDebug("Refreshed Microsoft token")
         return tok.access_token
     }
 
     return tok.access_token
+}
+
+void keepOAuthTokensAlive() {
+    try {
+        logDebug("Running OAuth keep-alive")
+
+        if (state?.msToken?.refresh_token) {
+
+            // force at least one real refresh cycle daily
+            state.msForceRefreshNext = true
+            microsoftAccessToken()
+
+        }
+
+        if (state?.gToken?.refresh_token) {
+            googleAccessToken()
+        }
+
+    } catch (Exception e) {
+        logWarn("Keep-alive failed: ${e.message}")
+    }
 }
 
 private Map fetchMicrosoftEvents(Boolean force = false) {
@@ -963,6 +1026,46 @@ private Map fetchMicrosoftEvents(Boolean force = false) {
             result.events = events
         } else {
             result.error = "Microsoft fetch failed: HTTP ${resp?.status}"
+        }
+    }
+
+    return result
+}
+
+private Map fetchMicrosoftPresenceCached(Boolean force, long minSeconds) {
+    if (!force && state?.msLastPresence && !shouldFetchProvider("microsoftPresence", minSeconds)) {
+        return state.msLastPresence
+    }
+
+    Map presence = fetchMicrosoftPresence()
+    state.msLastPresence = presence
+    state.lastMsPresenceFetchMs = now()
+    return presence
+}
+
+private Map fetchMicrosoftPresence() {
+    if (!state?.msToken?.refresh_token) {
+        return [error: "Microsoft not connected"]
+    }
+
+    String token = microsoftAccessToken()
+    if (!token) {
+        return [error: "Microsoft token unavailable"]
+    }
+
+    def req = [
+        uri: "https://graph.microsoft.com/v1.0/me/presence",
+        headers: [Authorization: "Bearer ${token}"]
+    ]
+
+    Map result = [:]
+
+    httpGet(req) { resp ->
+        if (resp?.status == 200) {
+            result.activity = resp.data.activity
+            result.availability = resp.data.availability
+        } else {
+            result.error = "Presence fetch failed: HTTP ${resp?.status}"
         }
     }
 
